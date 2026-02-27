@@ -1,0 +1,13 @@
+# CMake build directories
+build/
+out/
+bin/
+
+
+# Mac OS junk files
+.DS_Store
+
+
+# IDE configuration files
+.vscode/
+.idea/ 
