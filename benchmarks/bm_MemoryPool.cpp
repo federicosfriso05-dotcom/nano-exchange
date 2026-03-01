@@ -2,16 +2,17 @@
 #include <cstdint>
 #include "nano_exchange/memory_pool.hpp"
 
-// The same dummy order we used in testing
-struct DummyOrder {
+struct DummyOrder 
+{
     uint64_t id;
     uint64_t price;
 };
 
-// --- COMPETITOR 1: The Standard OS Allocator (Slow) ---
-static void BM_StandardNewDelete(benchmark::State& state) {
-    for (auto _ : state) {
-        // Asking the OS for memory
+// First try with dynamic allocation
+static void BM_StandardNewDelete(benchmark::State& state) 
+{
+    for (auto _ : state) 
+    {
         DummyOrder* order = new DummyOrder();
         benchmark::DoNotOptimize(order); 
         // Giving it back to the OS
@@ -20,20 +21,18 @@ static void BM_StandardNewDelete(benchmark::State& state) {
 }
 BENCHMARK(BM_StandardNewDelete);
 
-// --- COMPETITOR 2: Our Custom HFT Memory Pool (Fast) ---
-static void BM_MemoryPoolAllocDealloc(benchmark::State& state) {
-    // Pre-allocate the massive block ONCE, outside the timed loop
+// Second try with the O(1) intrusive free list
+static void BM_MemoryPoolAllocDealloc(benchmark::State& state) 
+{
     nano_exchange::MemoryPool<DummyOrder> pool(1000000); 
 
-    for (auto _ : state) {
-        // O(1) Intrusive Free List allocation
-        DummyOrder* order = pool.allocator();
+    for (auto _ : state) 
+    {
+        DummyOrder* order = pool.allocate();
         benchmark::DoNotOptimize(order);
-        // O(1) return to the Free List
-        pool.deallocator(order);
+        pool.deallocate(order);
     }
 }
 BENCHMARK(BM_MemoryPoolAllocDealloc);
 
-// This macro generates the main() function for the benchmark executable
 BENCHMARK_MAIN();
