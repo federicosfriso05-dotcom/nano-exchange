@@ -28,9 +28,9 @@ static void BM_MemoryPoolAllocDealloc(benchmark::State& state)
 
     for (auto _ : state) 
     {
-        DummyOrder* order = pool.allocate();
+        DummyOrder* order = pool.create();
         benchmark::DoNotOptimize(order);
-        pool.deallocate(order);
+        pool.destroy(order);
     }
 }
 BENCHMARK(BM_MemoryPoolAllocDealloc);

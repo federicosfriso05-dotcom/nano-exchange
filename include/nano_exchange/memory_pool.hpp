@@ -39,17 +39,19 @@ class MemoryPool
         pool_[capacity - 1].nextFreeIndex = capacity;  // capacity is the "full" signal
     }
 
-    T* allocate()
+    template <typename... Args>
+    T* create(Args&&... args)
     {
         if(nextFreeIndex_ == pool_.size())
             return nullptr;
         
         size_t temp = nextFreeIndex_;
         nextFreeIndex_ = pool_[temp].nextFreeIndex;
-        return &pool_[temp].obj;
+        //Placement new
+        return new (&pool_[temp].obj) T(std::forward<Args>(args)...);
     }
 
-    void deallocate(T* pointer)
+    void destroy(T* pointer)
     {
         if(pointer == nullptr)
             return;
@@ -59,6 +61,8 @@ class MemoryPool
         // Check valid pointer bounds. std::less() avoids UB when comparing pointers
         if(std::less<Slot*>{}(slot_pointer, pool_.data()) || std::greater_equal<Slot*>{}(slot_pointer, pool_.data() + pool_.size()))
             return;
+
+        pointer->~T();
 
         size_t difference = slot_pointer - pool_.data();
         pool_[difference].nextFreeIndex = nextFreeIndex_;

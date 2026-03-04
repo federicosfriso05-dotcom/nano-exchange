@@ -14,23 +14,23 @@ TEST(MemoryPoolTest, AllocationAndReuse)
 {
     nano_exchange::MemoryPool<DummyOrder> pool(3);
 
-    DummyOrder* order1 = pool.allocate();
-    DummyOrder* order2 = pool.allocate();
-    DummyOrder* order3 = pool.allocate();
+    DummyOrder* order1 = pool.create();
+    DummyOrder* order2 = pool.create();
+    DummyOrder* order3 = pool.create();
 
     ASSERT_NE(order1, nullptr);
     ASSERT_NE(order2, nullptr);
     ASSERT_NE(order3, nullptr);
 
     // Prove the pool is full
-    DummyOrder* order4 = pool.allocate();
+    DummyOrder* order4 = pool.create();
     EXPECT_EQ(order4, nullptr);
 
-    pool.deallocate(order2);
+    pool.destroy(order2);
 
     // Allocate a new order. The free list is a Stack (LIFO), so
     // the new order MUST give back the exact memory address that order2 used to have
-    DummyOrder* new_order = pool.allocate();
+    DummyOrder* new_order = pool.create();
     EXPECT_EQ(new_order, order2);
 }
 
@@ -38,7 +38,7 @@ TEST(MemoryPoolTest, HandlesNullptrDeallocation)
 {
     nano_exchange::MemoryPool<DummyOrder> pool(10);
 
-    EXPECT_NO_FATAL_FAILURE(pool.deallocate(nullptr)); 
+    EXPECT_NO_FATAL_FAILURE(pool.destroy(nullptr)); 
 }
 
 TEST(MemoryPoolTest, RejectsOutOfBoundsPointers) 
@@ -48,10 +48,10 @@ TEST(MemoryPoolTest, RejectsOutOfBoundsPointers)
     DummyOrder fake_order; 
     
     // Attempting to deallocate a pointer not owned by the pool
-    EXPECT_NO_FATAL_FAILURE(pool.deallocate(&fake_order)); 
+    EXPECT_NO_FATAL_FAILURE(pool.destroy(&fake_order)); 
     
     // The pool should have ignored it, so allocating a new order should 
     // still give the very first slot (index 0), not the fake pointer.
-    DummyOrder* real_order = pool.allocate();
+    DummyOrder* real_order = pool.create();
     EXPECT_NE(real_order, &fake_order); 
 }
