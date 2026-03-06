@@ -3,18 +3,19 @@
 
 namespace nano_exchange
 {
-    enum class Side
+    enum class Side: uint8_t
     {
         Buy, Sell
     };
 
     struct Order
     {
+        // Cache optimization
+        Order* next = nullptr;
+        Order* prev = nullptr;
         uint64_t id;
         uint64_t price;
         uint32_t quantity;
         Side side;
-        Order* next = nullptr;
-        Order* prev = nullptr;
     };
 }
