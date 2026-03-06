@@ -37,6 +37,12 @@ include_directories(include)
 
 # (Queste righe le sbloccheremo quando creeremo i file veri e propri dentro queste cartelle)
 # add_subdirectory(src)
-add_subdirectory(tests)
-# add_subdirectory(benchmarks)
-add_subdirectory(benchmarks)
+# Create the test executable with both files
+add_executable(nano_exchange_tests tests/test_memory_pool.cpp tests/test_PriceLevel.cpp)
+
+# Link Google Test to our executable so it understands the TEST() macros
+target_link_libraries(nano_exchange_tests gtest_main)
+
+# Tell CMake to automatically find and register the tests we wrote
+include(GoogleTest)
+gtest_discover_tests(nano_exchange_tests)
