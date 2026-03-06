@@ -2,7 +2,7 @@
 
 #include <cassert>
 #include <cstdint>
-#include "nano_exchange/order.hpp"
+#include "nano_exchange/Order.hpp"
 
 namespace nano_exchange
 {
@@ -10,17 +10,19 @@ namespace nano_exchange
     {
         Order* first = nullptr;
         Order* last = nullptr;
-        uint32_t volume = 0;
+        uint64_t volume = 0;
 
 
         bool is_empty() const
         {
-            return first == nullptr;
+            return first == nullptr && last == nullptr;
         }
 
         void append_order(Order* order)
         {
             assert(order != nullptr && "Cannot append a null order");
+            assert(order->quantity > 0 && "Cannot append an order with 0 quantity");
+            assert(order->prev == nullptr && order->next == nullptr && "Order is already linked");
 
             if(is_empty())
             {
@@ -41,6 +43,11 @@ namespace nano_exchange
         {
             if(is_empty() || order == nullptr)
                 return;
+
+            if(order->next == nullptr && order->prev == nullptr && first != order)
+                return;
+
+            assert(volume >= order->quantity && "Volume smaller than order quantity");
 
             volume -= order->quantity;
 
