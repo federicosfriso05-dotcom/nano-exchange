@@ -8,13 +8,15 @@
 
 namespace nano_exchange
 {
+    // Replaces O(N) array scans and O(log N) tree traversals in order to allow the CPU to check 
+    // 64 prices simultaneously in a single clock cycle using hardware intrinsics
     struct PriceBitset 
     {
         std::vector<uint64_t> blocks;
 
         PriceBitset(uint64_t max_price) : blocks((max_price / 64) + 1, 0) {}
 
-        inline void set_bit(uint64_t price) 
+        inline void set_bit(uint64_t price)
         {
             blocks[price / 64] |= (1ULL << (price % 64));
         }
@@ -24,14 +26,16 @@ namespace nano_exchange
             blocks[price / 64] &= ~(1ULL << (price % 64));
         }
 
+        // Scans up the order book for the lower active ask 
         inline uint64_t find_next_ask(uint64_t start_price, uint64_t max_price) 
         {
             if (start_price > max_price) 
-                return max_price + 1; 
+                return max_price + 1;
     
             uint64_t block_idx = start_price / 64;
             uint64_t bit_idx = start_price % 64;
             
+            // Mask out alla prices strictly less than start_price
             uint64_t mask = ~((1ULL << bit_idx) - 1);
             uint64_t masked_block = blocks[block_idx] & mask;
 
@@ -43,9 +47,10 @@ namespace nano_exchange
                 if (blocks[i] != 0) 
                     return (i * 64) + __builtin_ctzll(blocks[i]);
             }
-            return max_price + 1;
+            return max_price + 1; // Book is empty above start_price
         }
 
+        // Scans down the order book for the highest active bid
         inline uint64_t find_next_bid(uint64_t start_price) 
         {
             if (start_price == UINT64_MAX) return UINT64_MAX;
@@ -53,6 +58,7 @@ namespace nano_exchange
             uint64_t block_idx = start_price / 64;
             uint64_t bit_idx = start_price % 64;
 
+            // Mask out alla prices strictly greater than start_price
             uint64_t mask = (bit_idx == 63) ? ~0ULL : ((1ULL << (bit_idx + 1)) - 1);
             uint64_t masked_block = blocks[block_idx] & mask;
 
@@ -64,17 +70,20 @@ namespace nano_exchange
                 if (blocks[i] != 0) 
                     return (i * 64) + (63 - __builtin_clzll(blocks[i]));
             }
-            return UINT64_MAX;
+            return UINT64_MAX; // Book is empty below start_price
         }
     };
 
 
+    // An in-memory matching engine designed for ultra-low latency. 
+    // Implements O(1) order insertion, cancellation, and price-level resolution.
+    // Avoids standard library hashing and dynamic allocation.
     class OrderBook
     {
         private:
             std::vector<PriceLevel> bids;
             std::vector<PriceLevel> asks;
-            std::vector<Order*> orderVector;
+            std::vector<Order*> orderVector; // O(1) lookups, defeating std::unordered_map overhead
             PriceBitset bid_bitset;
             PriceBitset ask_bitset;
             uint64_t max_price;
@@ -96,6 +105,7 @@ namespace nano_exchange
                     best_price = is_buy ? maker_bitset.find_next_ask(best_price, max_price) 
                                         : maker_bitset.find_next_bid(best_price);
 
+                    // Spread check invariant: break if liquidity no longer crosses
                     if constexpr (is_buy)
                     {
                         if (best_price > order->price) 
@@ -114,6 +124,7 @@ namespace nano_exchange
                     stationary_maker->quantity -= trade_size;
                     maker_book[best_price].volume -= trade_size;
 
+                    // Cleanup depleted resting orders
                     if(stationary_maker->quantity == 0)
                     {
                         maker_book[best_price].remove_order(stationary_maker);
@@ -126,7 +137,8 @@ namespace nano_exchange
                         }
                     }
                 }
-
+                
+                // Add remaining quantity to the book
                 if(order->quantity > 0)
                 {
                     auto& my_book   = is_buy ? bids : asks;
@@ -136,6 +148,7 @@ namespace nano_exchange
                     orderVector[order->id] = order;
                     my_bitset.set_bit(order->price);
 
+                    // Update best bid or ask
                     if constexpr (is_buy)
                     {
                         highest_bid = (highest_bid == UINT64_MAX) ? order->price : std::max(highest_bid, order->price);
