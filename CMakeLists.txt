@@ -43,7 +43,7 @@ add_executable(bm_OptimizedOrderBook benchmarks/bm_OptimizedOrderBook.cpp)
 target_link_libraries(bm_OptimizedOrderBook PRIVATE nano_exchange_core benchmark::benchmark)
 
 
-add_executable(nano_exchange_tests tests/test_memory_pool.cpp tests/test_PriceLevel.cpp)
+add_executable(nano_exchange_tests tests/test_MemoryPool.cpp tests/test_PriceLevel.cpp)
 target_link_libraries(nano_exchange_tests PRIVATE nano_exchange_core gtest_main)
 
 include(GoogleTest)
