@@ -1,20 +1,17 @@
 cmake_minimum_required(VERSION 3.24)
 project(NanoExchange VERSION 1.0.0 LANGUAGES CXX)
-enable_testing()
 
+enable_testing()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF) # Disattiva estensioni proprietarie, vogliamo C++ puro
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wpedantic -Werror")
-
+add_compile_options(-Wall -Wextra -Wpedantic -Werror)
 
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native -DNDEBUG")
-
 set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -fsanitize=address,undefined -fno-omit-frame-pointer")
-
+set(CMAKE_EXE_LINKER_FLAGS_DEBUG "-fsanitize=address,undefined") 
 
 include(FetchContent)
 
@@ -32,17 +29,22 @@ FetchContent_Declare(
 set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googlebenchmark)
 
+add_library(nano_exchange_core INTERFACE)
+target_include_directories(nano_exchange_core INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
-include_directories(include)
 
-# (Queste righe le sbloccheremo quando creeremo i file veri e propri dentro queste cartelle)
-# add_subdirectory(src)
-# Create the test executable with both files
+add_executable(nano_exchange_app src/main.cpp)
+target_link_libraries(nano_exchange_app PRIVATE nano_exchange_core)
+
+add_executable(bm_NaiveOrderBook benchmarks/bm_NaiveOrderBook.cpp)
+target_link_libraries(bm_NaiveOrderBook PRIVATE nano_exchange_core benchmark::benchmark)
+
+add_executable(bm_OptimizedOrderBook benchmarks/bm_OptimizedOrderBook.cpp)
+target_link_libraries(bm_OptimizedOrderBook PRIVATE nano_exchange_core benchmark::benchmark)
+
+
 add_executable(nano_exchange_tests tests/test_memory_pool.cpp tests/test_PriceLevel.cpp)
+target_link_libraries(nano_exchange_tests PRIVATE nano_exchange_core gtest_main)
 
-# Link Google Test to our executable so it understands the TEST() macros
-target_link_libraries(nano_exchange_tests gtest_main)
-
-# Tell CMake to automatically find and register the tests we wrote
 include(GoogleTest)
 gtest_discover_tests(nano_exchange_tests)
