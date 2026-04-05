@@ -16,7 +16,7 @@ TEST(PriceLevelTest, IsEmptyOnCreation)
 TEST(PriceLevelTest, AppendFirstOrder)
 {
     PriceLevel level;
-    Order order1 {nullptr, nullptr, 1, 150, 100, Side::Buy};
+    Order order1 {1, 150, 100, Side::Buy};
 
     level.append_order(&order1);
 
@@ -29,9 +29,9 @@ TEST(PriceLevelTest, AppendFirstOrder)
 TEST(PriceLevelTest, RemoveMiddleOrder)
 {
     PriceLevel level;
-    Order order1{nullptr, nullptr, 1, 200, 100, Side::Buy};
-    Order order2{nullptr, nullptr, 2, 250, 200, Side::Buy};
-    Order order3{nullptr, nullptr, 3, 100, 300, Side::Buy};
+    Order order1{1, 200, 100, Side::Buy};
+    Order order2{2, 250, 200, Side::Buy};
+    Order order3{3, 100, 300, Side::Buy};
 
     level.append_order(&order1);
     level.append_order(&order2);
@@ -52,9 +52,9 @@ TEST(PriceLevelTest, RemoveMiddleOrder)
 TEST(PriceLevelTest, RemoveFirstOrder)
 {
     PriceLevel level;
-    Order order1{nullptr, nullptr, 1, 200, 100, Side::Buy};
-    Order order2{nullptr, nullptr, 2, 250, 200, Side::Buy};
-    Order order3{nullptr, nullptr, 3, 100, 300, Side::Buy};
+    Order order1{1, 200, 100, Side::Buy};
+    Order order2{2, 250, 200, Side::Buy};
+    Order order3{3, 100, 300, Side::Buy};
 
     level.append_order(&order1);
     level.append_order(&order2);
@@ -76,9 +76,9 @@ TEST(PriceLevelTest, RemoveFirstOrder)
 TEST(PriceLevelTest, RemoveLastOrder)
 {
     PriceLevel level;
-    Order order1{nullptr, nullptr, 1, 200, 100, Side::Buy};
-    Order order2{nullptr, nullptr, 2, 250, 200, Side::Buy};
-    Order order3{nullptr, nullptr, 3, 100, 300, Side::Buy};
+    Order order1{1, 200, 100, Side::Buy};
+    Order order2{2, 250, 200, Side::Buy};
+    Order order3{3, 100, 300, Side::Buy};
 
     level.append_order(&order1);
     level.append_order(&order2);
@@ -100,7 +100,7 @@ TEST(PriceLevelTest, RemoveLastOrder)
 TEST(PriceLevelTest, RemoveUniqueOrder)
 {
     PriceLevel level;
-    Order order1{nullptr, nullptr, 1, 200, 100, Side::Buy};
+    Order order1{1, 200, 100, Side::Buy};
 
     level.append_order(&order1);
 
