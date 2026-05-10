@@ -187,6 +187,9 @@ Performance:
 ```
 </details>
 
+### Note on Apple Silicon Benchmarks: 
+The engine's core execution time (~22 ns) is strictly faster than the macOS ARM hardware timer resolution, which is physically locked at 24 MHz (~41.67 ns tick rate). To bypass this hardware quantization limit, per-order latency is mathematically validated using Google Benchmark (via loop amortization), while the un-instrumented core engine runs freely to demonstrate the raw throughput of ~45.5M ops/sec
+
 ## License
 
 This project is open-source and developed for educational purposes and performance demonstration.
