@@ -23,4 +23,14 @@ namespace nano_exchange
         
         Order() = default;
     };
+
+    // Plain data carrier sent through the gateway → matching SPSC queue.
+    // Keeps the wire format decoupled from the linked-list internals of Order.
+    struct OrderDescriptor
+    {
+        uint64_t id;
+        uint64_t price;
+        uint32_t quantity;
+        Side     side;
+    };
 }

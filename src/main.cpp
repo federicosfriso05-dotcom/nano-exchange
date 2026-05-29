@@ -1,102 +1,186 @@
-#include <iostream>
-#include <chrono>
-#include <random>
-#include <vector>
-#include <iomanip>
 #include <algorithm>
-#include <numeric>
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <iomanip>
+#include <iostream>
+#include <thread>
+#include <vector>
 
-#include "nano_exchange/Order.hpp"
 #include "nano_exchange/MemoryPool.hpp"
+#include "nano_exchange/Order.hpp"
 #include "nano_exchange/OrderBook.hpp"
+#include "nano_exchange/SPSCQueue.hpp"
+#include "nano_exchange/TradeEvent.hpp"
 
 using namespace nano_exchange;
 
-int main() 
+static constexpr uint64_t MAX_PRICE      = 100000;
+static constexpr size_t   MAX_ORDERS     = 1000000;
+static constexpr size_t   NUM_ORDERS     = 1000000;
+static constexpr size_t   BATCH_SIZE     = 1000;
+static constexpr size_t   NUM_BATCHES    = NUM_ORDERS / BATCH_SIZE;
+static constexpr size_t   QUEUE_CAPACITY = 4096;   // must be power of 2
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pipeline:
+//
+//   [Main / Gateway thread]
+//       generates OrderDescriptors, pushes to order_queue
+//                │
+//         SPSCQueue<OrderDescriptor, 4096>
+//                │
+//   [Matching thread]
+//       pulls OrderDescriptors, creates Order* from MemoryPool,
+//       runs OrderBook, emits TradeEvents to trade_queue,
+//       records per-batch latency samples
+//                │
+//         SPSCQueue<TradeEvent, 4096>
+//                │
+//   [Reporter thread]
+//       pulls TradeEvents, accumulates trade statistics
+// ─────────────────────────────────────────────────────────────────────────────
+
+int main()
 {
-    // Compile-time constants
-    constexpr uint64_t MAX_PRICE = 100000;   
-    constexpr size_t NUM_ORDERS = 1000000;   
-    
-    // Batching prevents std::chrono quantization errors on sub-100ns measurements
-    constexpr size_t BATCH_SIZE = 1000;      
-    constexpr size_t NUM_BATCHES = NUM_ORDERS / BATCH_SIZE;
+    SPSCQueue<OrderDescriptor, QUEUE_CAPACITY> order_queue;
+    SPSCQueue<TradeEvent,      QUEUE_CAPACITY> trade_queue;
 
-    MemoryPool<Order> pool(NUM_ORDERS + 1);
-    OrderBook book(MAX_PRICE, NUM_ORDERS + 1, pool);
+    std::atomic<bool> gateway_done{false};
+    std::atomic<bool> matching_done{false};
 
-    std::vector<Order*> orders_to_submit;
-    orders_to_submit.reserve(NUM_ORDERS);
-
-    std::mt19937 rng(42); 
-    std::uniform_int_distribution<uint64_t> price_dist(49800, 50200); 
-    std::uniform_int_distribution<uint32_t> qty_dist(1, 100);
-    std::uniform_int_distribution<int> side_dist(0, 1);
-
-    size_t total_buys = 0;
-    size_t total_sells = 0;
+    // Written only by the gateway thread, read after join — no need for atomics.
+    size_t   total_buys   = 0;
+    size_t   total_sells  = 0;
     uint64_t total_volume = 0;
 
-    for (size_t i = 1; i <= NUM_ORDERS; ++i) 
+    // Written only by the matching thread, read after join.
+    std::vector<double> latency_samples;
+    latency_samples.reserve(NUM_BATCHES);
+
+    std::atomic<uint64_t> trades_executed{0};
+    std::atomic<uint64_t> volume_matched{0};
+
+    // ── Reporter thread ───────────────────────────────────────────────────────
+    std::thread reporter([&]()
     {
-        Side side = (side_dist(rng) == 0) ? Side::Buy : Side::Sell;
-        uint64_t price = price_dist(rng);
-        uint32_t qty = qty_dist(rng);
-        
-        if (side == Side::Buy) total_buys++; else total_sells++;
+        TradeEvent ev;
+        while (!matching_done.load(std::memory_order_acquire) || !trade_queue.empty())
+        {
+            if (trade_queue.pop(ev))
+            {
+                trades_executed.fetch_add(1, std::memory_order_relaxed);
+                volume_matched.fetch_add(ev.quantity, std::memory_order_relaxed);
+            }
+        }
+    });
+
+    // ── Matching thread ───────────────────────────────────────────────────────
+    std::thread matching([&]()
+    {
+        MemoryPool<Order> pool(MAX_ORDERS);
+
+        auto on_trade = [&](const TradeEvent& ev)
+        {
+            while (!trade_queue.push(ev)) {}
+        };
+
+        OrderBook book(MAX_PRICE, MAX_ORDERS, pool, on_trade);
+
+        OrderDescriptor desc;
+        size_t orders_processed = 0;
+        auto batch_start = std::chrono::high_resolution_clock::now();
+
+        while (!gateway_done.load(std::memory_order_acquire) || !order_queue.empty())
+        {
+            if (!order_queue.pop(desc))
+                continue;
+
+            Order* o = pool.create(desc.id, desc.price, desc.quantity, desc.side);
+            if (o)
+                book.submit_order(o);
+
+            ++orders_processed;
+            if (orders_processed % BATCH_SIZE == 0)
+            {
+                auto now = std::chrono::high_resolution_clock::now();
+                double batch_ns = std::chrono::duration<double, std::nano>(now - batch_start).count();
+                latency_samples.push_back(batch_ns / BATCH_SIZE);
+                batch_start = now;
+            }
+        }
+
+        matching_done.store(true, std::memory_order_release);
+    });
+
+    // ── Gateway (main thread) ─────────────────────────────────────────────────
+    // XOR-shift PRNG: same algorithm as lat_OptimizedOrderBook for consistency.
+    uint64_t x = 0x9E3779B97F4A7C15ULL;
+    auto next_u64 = [&]() noexcept -> uint64_t
+    {
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        return x * 0x2545F4914F6CDD1DULL;
+    };
+
+    const auto t_start = std::chrono::high_resolution_clock::now();
+
+    for (uint64_t i = 1; i <= NUM_ORDERS; ++i)
+    {
+        const uint64_t r     = next_u64();
+        const bool     is_buy = (r & 1ULL) == 0;
+        const uint64_t price  = 49800 + (r >> 1) % 401;
+        const uint32_t qty    = static_cast<uint32_t>(1 + (r >> 20) % 100);
+
+        if (is_buy) ++total_buys; else ++total_sells;
         total_volume += qty;
 
-        orders_to_submit.push_back(pool.create(i, price, qty, side));
+        const OrderDescriptor desc{i, price, qty, is_buy ? Side::Buy : Side::Sell};
+        while (!order_queue.push(desc)) {}
     }
-    
-    std::vector<double> batch_latencies_ns;
-    batch_latencies_ns.reserve(NUM_BATCHES);
 
-    auto global_start = std::chrono::high_resolution_clock::now();
+    gateway_done.store(true, std::memory_order_release);
 
-    for (size_t b = 0; b < NUM_BATCHES; ++b) 
+    matching.join();
+    reporter.join();
+
+    const auto   t_end          = std::chrono::high_resolution_clock::now();
+    const double total_seconds  = std::chrono::duration<double>(t_end - t_start).count();
+    const double avg_throughput = NUM_ORDERS / total_seconds;
+
+    // Compute latency percentiles from matching-thread samples
+    std::sort(latency_samples.begin(), latency_samples.end());
+
+    auto percentile = [&](double p) -> double
     {
-        auto batch_start = std::chrono::high_resolution_clock::now();
-        
-        for (size_t i = 0; i < BATCH_SIZE; ++i) 
-            book.submit_order(orders_to_submit[b * BATCH_SIZE + i]);
-        
-        auto batch_end = std::chrono::high_resolution_clock::now();
-        
-        double batch_ns = std::chrono::duration<double, std::nano>(batch_end - batch_start).count();
-        batch_latencies_ns.push_back(batch_ns / BATCH_SIZE);
-    }
+        if (latency_samples.empty()) return 0.0;
+        const size_t idx = static_cast<size_t>(NUM_BATCHES * p);
+        return latency_samples[std::min(idx, latency_samples.size() - 1)];
+    };
 
-    auto global_end = std::chrono::high_resolution_clock::now();
+    const double p50    = percentile(0.50);
+    const double p90    = percentile(0.90);
+    const double p99    = percentile(0.99);
+    const double p99_9  = percentile(0.999);
+    const double max_lat = latency_samples.empty() ? 0.0 : latency_samples.back();
 
-    // Compute tail latencies
-    std::sort(batch_latencies_ns.begin(), batch_latencies_ns.end());
-
-    double p50   = batch_latencies_ns[static_cast<size_t>(NUM_BATCHES * 0.50)];
-    double p90   = batch_latencies_ns[static_cast<size_t>(NUM_BATCHES * 0.90)];
-    double p99   = batch_latencies_ns[static_cast<size_t>(NUM_BATCHES * 0.99)];
-    double p99_9 = batch_latencies_ns[static_cast<size_t>(NUM_BATCHES * 0.999)];
-    double max_lat = batch_latencies_ns.back();
-
-    double total_seconds = std::chrono::duration<double>(global_end - global_start).count();
-    double avg_throughput = NUM_ORDERS / total_seconds;
-
-    // Standardized Output Report
+    // ── Report ────────────────────────────────────────────────────────────────
     std::cout << " System throughput and latency report:\n";
-    std::cout << "  Total Orders:      " << NUM_ORDERS << "\n";
-    std::cout << "  Distribution:      " << total_buys << " Buys / " << total_sells << " Sells\n";
+    std::cout << "  Total Orders:      " << NUM_ORDERS   << "\n";
+    std::cout << "  Distribution:      " << total_buys   << " Buys / " << total_sells << " Sells\n";
     std::cout << "  Total Volume:      " << total_volume << " shares\n\n";
 
     std::cout << "Performance:\n";
-    std::cout << "  Wall Time:         " << std::fixed << std::setprecision(4) << total_seconds << " seconds\n";
+    std::cout << "  Wall Time:         " << std::fixed << std::setprecision(4) << total_seconds  << " seconds\n";
     std::cout << "  Avg Throughput:    " << std::setprecision(0) << avg_throughput << " ops/sec\n\n";
 
     std::cout << "[ LATENCY DISTRIBUTION (Per Order) ]\n";
-    std::cout << "  p50 (Median):      " << std::setprecision(2) << p50 << " ns\n";
-    std::cout << "  p90:               " << p90 << " ns\n";
-    std::cout << "  p99 (Tail):        " << p99 << " ns\n";
-    std::cout << "  p99.9 (Extreme):   " << p99_9 << " ns\n";
-    std::cout << "  Max:               " << max_lat << " ns\n";
+    std::cout << "  p50 (Median):      " << std::setprecision(2) << p50    << " ns\n";
+    std::cout << "  p90:               "                         << p90    << " ns\n";
+    std::cout << "  p99 (Tail):        "                         << p99    << " ns\n";
+    std::cout << "  p99.9 (Extreme):   "                         << p99_9  << " ns\n";
+    std::cout << "  Max:               "                         << max_lat << " ns\n";
 
     return 0;
 }
