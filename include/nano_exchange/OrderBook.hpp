@@ -1,3 +1,4 @@
+#pragma once
 #include <algorithm>
 #include <cstdint>
 #include <stdexcept>
@@ -5,12 +6,13 @@
 #include "nano_exchange/MemoryPool.hpp"
 #include "nano_exchange/Order.hpp"
 #include "nano_exchange/PriceLevel.hpp"
+#include "nano_exchange/TradeEvent.hpp"
 
 namespace nano_exchange
 {
-    // Replaces O(N) array scans and O(log N) tree traversals in order to allow the CPU to check 
+    // Replaces O(N) array scans and O(log N) tree traversals in order to allow the CPU to check
     // 64 prices simultaneously in a single clock cycle using hardware intrinsics
-    struct PriceBitset 
+    struct PriceBitset
     {
         std::vector<uint64_t> blocks;
 
@@ -21,37 +23,37 @@ namespace nano_exchange
             blocks[price / 64] |= (1ULL << (price % 64));
         }
 
-        inline void clear_bit(uint64_t price) 
+        inline void clear_bit(uint64_t price)
         {
             blocks[price / 64] &= ~(1ULL << (price % 64));
         }
 
-        // Scans up the order book for the lower active ask 
-        inline uint64_t find_next_ask(uint64_t start_price, uint64_t max_price) 
+        // Scans up the order book for the lower active ask
+        inline uint64_t find_next_ask(uint64_t start_price, uint64_t max_price)
         {
-            if (start_price > max_price) 
+            if (start_price > max_price)
                 return max_price + 1;
-    
+
             uint64_t block_idx = start_price / 64;
             uint64_t bit_idx = start_price % 64;
-            
+
             // Mask out alla prices strictly less than start_price
             uint64_t mask = ~((1ULL << bit_idx) - 1);
             uint64_t masked_block = blocks[block_idx] & mask;
 
-            if (masked_block != 0) 
+            if (masked_block != 0)
                 return (block_idx * 64) + __builtin_ctzll(masked_block);
 
             for (uint64_t i = block_idx + 1; i < blocks.size(); ++i)
             {
-                if (blocks[i] != 0) 
+                if (blocks[i] != 0)
                     return (i * 64) + __builtin_ctzll(blocks[i]);
             }
             return max_price + 1; // Book is empty above start_price
         }
 
         // Scans down the order book for the highest active bid
-        inline uint64_t find_next_bid(uint64_t start_price) 
+        inline uint64_t find_next_bid(uint64_t start_price)
         {
             if (start_price == UINT64_MAX) return UINT64_MAX;
 
@@ -62,12 +64,12 @@ namespace nano_exchange
             uint64_t mask = (bit_idx == 63) ? ~0ULL : ((1ULL << (bit_idx + 1)) - 1);
             uint64_t masked_block = blocks[block_idx] & mask;
 
-            if (masked_block != 0) 
+            if (masked_block != 0)
                 return (block_idx * 64) + (63 - __builtin_clzll(masked_block));
 
             for (int64_t i = (uint64_t)block_idx - 1; i >= 0; --i)
             {
-                if (blocks[i] != 0) 
+                if (blocks[i] != 0)
                     return (i * 64) + (63 - __builtin_clzll(blocks[i]));
             }
             return UINT64_MAX; // Book is empty below start_price
@@ -75,9 +77,16 @@ namespace nano_exchange
     };
 
 
-    // An in-memory matching engine designed for ultra-low latency. 
+    // Default no-op callback: zero cost — optimizer eliminates the call entirely.
+    struct NoopCallback {
+        void operator()(const TradeEvent&) const noexcept {}
+    };
+
+    // An in-memory matching engine designed for ultra-low latency.
     // Implements O(1) order insertion, cancellation, and price-level resolution.
     // Avoids standard library hashing and dynamic allocation.
+    // Callback is a zero-cost template parameter: inlined by the compiler, no virtual dispatch.
+    template<typename Callback = NoopCallback>
     class OrderBook
     {
         private:
@@ -90,39 +99,42 @@ namespace nano_exchange
             uint64_t highest_bid;
             uint64_t lowest_ask;
             MemoryPool<Order>& order_pool;
+            Callback on_trade_;
 
             template <Side S>
             void process_order(Order* order)
             {
                 constexpr bool is_buy = (S == Side::Buy);
-                
+
                 auto& maker_book    = is_buy ? asks : bids;
                 auto& maker_bitset  = is_buy ? ask_bitset : bid_bitset;
                 auto& best_price    = is_buy ? lowest_ask : highest_bid;
 
                 while(order->quantity > 0)
                 {
-                    best_price = is_buy ? maker_bitset.find_next_ask(best_price, max_price) 
+                    best_price = is_buy ? maker_bitset.find_next_ask(best_price, max_price)
                                         : maker_bitset.find_next_bid(best_price);
 
                     // Spread check invariant: break if liquidity no longer crosses
                     if constexpr (is_buy)
                     {
-                        if (best_price > order->price) 
+                        if (best_price > order->price)
                             break;
-                    } 
+                    }
                     else
                     {
-                        if (best_price < order->price || best_price == UINT64_MAX) 
+                        if (best_price < order->price || best_price == UINT64_MAX)
                             break;
                     }
 
                     Order* stationary_maker = maker_book[best_price].first;
                     uint32_t trade_size = std::min(order->quantity, stationary_maker->quantity);
-                    
+
                     order->quantity -= trade_size;
                     stationary_maker->quantity -= trade_size;
                     maker_book[best_price].volume -= trade_size;
+
+                    on_trade_(TradeEvent{order->id, stationary_maker->id, best_price, trade_size, S});
 
                     // Cleanup depleted resting orders
                     if(stationary_maker->quantity == 0)
@@ -130,20 +142,25 @@ namespace nano_exchange
                         maker_book[best_price].remove_order(stationary_maker);
                         orderVector[stationary_maker->id] = nullptr;
                         order_pool.destroy(stationary_maker);
-                        
+
                         if(maker_book[best_price].is_empty())
                         {
                             maker_bitset.clear_bit(best_price);
+                            // Keep best_price current so get_best_ask/bid are accurate
+                            // even when the loop exits on the same iteration (qty == 0).
+                            best_price = is_buy
+                                ? maker_bitset.find_next_ask(best_price, max_price)
+                                : maker_bitset.find_next_bid(best_price);
                         }
                     }
                 }
-                
+
                 // Add remaining quantity to the book
                 if(order->quantity > 0)
                 {
                     auto& my_book   = is_buy ? bids : asks;
                     auto& my_bitset = is_buy ? bid_bitset : ask_bitset;
-                    
+
                     my_book[order->price].append_order(order);
                     orderVector[order->id] = order;
                     my_bitset.set_bit(order->price);
@@ -165,9 +182,12 @@ namespace nano_exchange
 
         public:
 
-        OrderBook(uint64_t maxPrice, size_t max_orders, MemoryPool<Order>& pool) : bids(maxPrice + 1), asks(maxPrice + 1), 
-            orderVector(max_orders + 1, nullptr), bid_bitset(maxPrice), ask_bitset(maxPrice), max_price(maxPrice), 
-            highest_bid(UINT64_MAX), lowest_ask(maxPrice + 1), order_pool(pool)
+        OrderBook(uint64_t maxPrice, size_t max_orders, MemoryPool<Order>& pool,
+                  Callback on_trade = Callback{})
+            : bids(maxPrice + 1), asks(maxPrice + 1),
+              orderVector(max_orders + 1, nullptr), bid_bitset(maxPrice), ask_bitset(maxPrice),
+              max_price(maxPrice), highest_bid(UINT64_MAX), lowest_ask(maxPrice + 1),
+              order_pool(pool), on_trade_(std::move(on_trade))
         {
             if(max_price == 0)
                 throw std::invalid_argument("Max price must be greaten than 0");
@@ -177,14 +197,14 @@ namespace nano_exchange
         {
             if(order_id >= orderVector.size() || orderVector[order_id] == nullptr)
                 throw std::invalid_argument("Order not found!");
-            
+
             Order* target = orderVector[order_id];
             uint64_t price = target->price;
 
             if(target->side == Side::Buy)
             {
                 bids[target->price].remove_order(target);
-                
+
                 if(bids[price].is_empty())
                 {
                     bid_bitset.clear_bit(price);
@@ -223,5 +243,28 @@ namespace nano_exchange
             else
                 process_order<Side::Sell>(order);
         }
+
+        // Returns the best bid price, or 0 if the bid side is empty.
+        uint64_t get_best_bid() const noexcept
+        {
+            return (highest_bid == UINT64_MAX) ? 0 : highest_bid;
+        }
+
+        // Returns the best ask price, or UINT64_MAX if the ask side is empty.
+        uint64_t get_best_ask() const noexcept
+        {
+            return (lowest_ask > max_price) ? UINT64_MAX : lowest_ask;
+        }
+
+        bool is_order_active(uint64_t order_id) const noexcept
+        {
+            return order_id < orderVector.size() && orderVector[order_id] != nullptr;
+        }
     };
+
+    // CTAD deduction guides so callers never need to write OrderBook<LambdaType>.
+    template<typename Callback>
+    OrderBook(uint64_t, size_t, MemoryPool<Order>&, Callback) -> OrderBook<Callback>;
+
+    OrderBook(uint64_t, size_t, MemoryPool<Order>&) -> OrderBook<NoopCallback>;
 }
