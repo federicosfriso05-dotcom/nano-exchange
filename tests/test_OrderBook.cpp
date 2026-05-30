@@ -3,6 +3,7 @@
 #include <vector>
 #include "nano_exchange/MemoryPool.hpp"
 #include "nano_exchange/OrderBook.hpp"
+#include "nano_exchange/TradeEvent.hpp"
 
 using namespace nano_exchange;
 
@@ -120,4 +121,54 @@ TEST_F(OrderBookTest, SweepMultipleLevels)
     EXPECT_TRUE(book->is_order_active(3));
 
     EXPECT_EQ(book->get_best_ask(), 102ULL);
+}
+
+TEST(TradeEventTest, CallbackFiredWithCorrectValues)
+{
+    // Verify that on_trade_ is called once with the exact fill data.
+    constexpr uint64_t max_price  = 1000;
+    constexpr size_t   max_orders = 100;
+
+    MemoryPool<Order> pool(max_orders);
+
+    std::vector<TradeEvent> events;
+    auto callback = [&](const TradeEvent& ev) { events.push_back(ev); };
+
+    OrderBook book(max_price, max_orders, pool, callback);
+
+    book.submit_order(pool.create(1, 500, 30, Side::Sell));
+    book.submit_order(pool.create(2, 500, 30, Side::Buy));
+
+    ASSERT_EQ(events.size(), 1u);
+    EXPECT_EQ(events[0].maker_id,      1u);
+    EXPECT_EQ(events[0].aggressor_id,  2u);
+    EXPECT_EQ(events[0].price,         500u);
+    EXPECT_EQ(events[0].quantity,      30u);
+    EXPECT_EQ(events[0].aggressor_side, Side::Buy);
+}
+
+TEST(TradeEventTest, CallbackFiredForEachPartialFill)
+{
+    // A sweep across 3 levels must fire one TradeEvent per maker order consumed.
+    constexpr uint64_t max_price  = 1000;
+    constexpr size_t   max_orders = 100;
+
+    MemoryPool<Order> pool(max_orders);
+
+    std::vector<TradeEvent> events;
+    auto callback = [&](const TradeEvent& ev) { events.push_back(ev); };
+
+    OrderBook book(max_price, max_orders, pool, callback);
+
+    book.submit_order(pool.create(1, 100, 10, Side::Sell));
+    book.submit_order(pool.create(2, 101, 10, Side::Sell));
+    book.submit_order(pool.create(3, 102, 10, Side::Sell));
+
+    // Aggressive buy sweeps all three levels.
+    book.submit_order(pool.create(10, 102, 30, Side::Buy));
+
+    ASSERT_EQ(events.size(), 3u);
+    EXPECT_EQ(events[0].price, 100u);
+    EXPECT_EQ(events[1].price, 101u);
+    EXPECT_EQ(events[2].price, 102u);
 }
