@@ -63,7 +63,7 @@ Performance:
 </details>
 
 ### Note on Apple Silicon Benchmarks: 
-The engine's core execution time (~22 ns) is strictly faster than the macOS ARM hardware timer resolution, which is physically locked at 24 MHz (~41.67 ns tick rate). To bypass this hardware quantization limit, `lat_OptimizedOrderBook` uses batch averaging: 1000 orders are timed per sample and the result is divided, yielding ~0.04 ns effective resolution. The pipeline throughput (~11M ops/sec) is measured end-to-end by `nano_exchange_app`.
+The engine's core execution time (~21 ns) is strictly faster than the macOS ARM hardware timer resolution, which is physically locked at 24 MHz (~41.67 ns tick rate). To bypass this hardware quantization limit, `lat_OptimizedOrderBook` uses batch averaging: 1000 orders are timed per sample and the result is divided, yielding ~0.04 ns effective resolution. The pipeline throughput (~11M ops/sec) is measured end-to-end by `nano_exchange_app`.
 
 ## Design Decisions
 
