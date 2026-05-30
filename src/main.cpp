@@ -22,24 +22,6 @@ static constexpr size_t   BATCH_SIZE     = 1000;
 static constexpr size_t   NUM_BATCHES    = NUM_ORDERS / BATCH_SIZE;
 static constexpr size_t   QUEUE_CAPACITY = 4096;   // must be power of 2
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Pipeline:
-//
-//   [Main / Gateway thread]
-//       generates OrderDescriptors, pushes to order_queue
-//                │
-//         SPSCQueue<OrderDescriptor, 4096>
-//                │
-//   [Matching thread]
-//       pulls OrderDescriptors, creates Order* from MemoryPool,
-//       runs OrderBook, emits TradeEvents to trade_queue,
-//       records per-batch latency samples
-//                │
-//         SPSCQueue<TradeEvent, 4096>
-//                │
-//   [Reporter thread]
-//       pulls TradeEvents, accumulates trade statistics
-// ─────────────────────────────────────────────────────────────────────────────
 
 int main()
 {
@@ -61,7 +43,7 @@ int main()
     std::atomic<uint64_t> trades_executed{0};
     std::atomic<uint64_t> volume_matched{0};
 
-    // ── Reporter thread ───────────────────────────────────────────────────────
+    // Reporter thread
     std::thread reporter([&]()
     {
         TradeEvent ev;
@@ -75,7 +57,7 @@ int main()
         }
     });
 
-    // ── Matching thread ───────────────────────────────────────────────────────
+    // Matching thread 
     std::thread matching([&]()
     {
         MemoryPool<Order> pool(MAX_ORDERS);
@@ -113,8 +95,7 @@ int main()
         matching_done.store(true, std::memory_order_release);
     });
 
-    // ── Gateway (main thread) ─────────────────────────────────────────────────
-    // XOR-shift PRNG: same algorithm as lat_OptimizedOrderBook for consistency.
+    // Gateway (main thread): generates random orders and pushes them to the matching thread via SPSC queue.
     uint64_t x = 0x9E3779B97F4A7C15ULL;
     auto next_u64 = [&]() noexcept -> uint64_t
     {
@@ -165,7 +146,7 @@ int main()
     const double p99_9  = percentile(0.999);
     const double max_lat = latency_samples.empty() ? 0.0 : latency_samples.back();
 
-    // ── Report ────────────────────────────────────────────────────────────────
+    // Final Report
     std::cout << " System throughput and latency report:\n";
     std::cout << "  Total Orders:      " << NUM_ORDERS   << "\n";
     std::cout << "  Distribution:      " << total_buys   << " Buys / " << total_sells << " Sells\n";
